@@ -3227,122 +3227,116 @@ const mp = {
   shots: 0, supers: 0, aim: 0, presT: 0, snapT: 0, bulletSeq: 0, seen: {}, peerMap: new Map(),
   lastSnapAt: 0, savedPower: null, prevMode: null, prevMap: null, prevDiff: null,
 };
-// ---------- Direkte Verbindung (ohne claude.ai) ----------
-// Die Geräte verbinden sich über WebRTC (Bibliothek PeerJS). Der Gastgeber ist der Mittelpunkt:
-// alle Mitspieler verbinden sich mit ihm, er verteilt Spielerliste und Nachrichten weiter.
+// ---------- Mehrspieler ohne claude.ai ----------
+// Alle Geräte verbinden sich mit einem öffentlichen Nachrichten-Server (MQTT über WebSocket).
+// Das klappt in fast jedem Netz (auch im Handy-Netz), weil keine direkte Verbindung zwischen den Geräten nötig ist.
 // Nach außen sieht das genauso aus wie ein claude.ai-Raum (peers, presence, emit, on, onPeers, leave).
-const P2P_PREFIX = 'arena-krawall-raum-';
-function loadPeerJs(){
-  if (window.Peer) return Promise.resolve(true);
+const RELAYS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const RELAY_BASE = 'arena-krawall/v1/';
+function loadRelayLib(){
+  if (window.mqtt) return Promise.resolve(true);
   return new Promise(res => {
     const s = document.createElement('script');
-    s.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-    s.onload = () => res(!!window.Peer); s.onerror = () => res(false);
+    s.src = 'https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js';
+    s.onload = () => res(!!window.mqtt); s.onerror = () => res(false);
     document.head.appendChild(s);
   });
 }
-const p2pApi = () => ({ p2p: true, join: (code, asHost) => p2pJoin(code, asHost) });
-function p2pJoin(code, asHost){
+const relayApi = () => ({ p2p: true, join: (code, asHost) => relayJoin(code, asHost) });
+function relayConnect(url, id, will){
   return new Promise((resolve, reject) => {
-    const peer = asHost ? new Peer(P2P_PREFIX + code) : new Peer();
-    let room = null, done = false;
-    // Fehler nach dem Betreten (z. B. Vermittlungs-Server kurz weg) stören laufende Verbindungen nicht
-    const fail = err => { if (!done){ done = true; try { peer.destroy(); } catch (e) {} reject(err); } };
-    peer.on('error', err => fail({ code: err.type }));
-    peer.on('disconnected', () => { if (room && !room.closed) try { peer.reconnect(); } catch (e) {} });
-    peer.on('open', id => {
-      if (room) return;   // nach einem Neuverbinden
-      room = p2pRoom(peer, id, asHost);
-      if (asHost){ done = true; resolve(room); return; }
-      const conn = peer.connect(P2P_PREFIX + code, { serialization: 'json', reliable: true });
-      const t = setTimeout(() => fail({ code: 'peer-unavailable' }), 12000);
-      conn.on('open', () => { clearTimeout(t); room._useHost(conn); done = true; resolve(room); });
-    });
+    const c = mqtt.connect(url, { clientId: 'ak-' + id, keepalive: 20, reconnectPeriod: 2000, connectTimeout: 7000, clean: true, will });
+    const t = setTimeout(() => { try { c.end(true); } catch (e) {} reject({ code: 'network' }); }, 8000);
+    c.once('connect', () => { clearTimeout(t); resolve(c); });
   });
 }
-function p2pRoom(peer, myId, isHost){
-  const handlers = {}, peerCbs = [], lostCbs = [];
+async function relayJoin(code, asHost){
+  const myId = Math.random().toString(36).slice(2, 10);
+  const base = RELAY_BASE + code + '/';
+  const will = { topic: base + 'p/' + myId, payload: JSON.stringify({ bye: 1 }), qos: 0, retain: false };
+  // Ersten erreichbaren Server nehmen
+  let client = null;
+  for (const url of RELAYS){ try { client = await relayConnect(url, myId, will); break; } catch (e) {} }
+  if (!client) throw { code: 'network' };
+
+  const handlers = {}, peerCbs = [];
   const members = new Map([[myId, { peer: myId, presence: {}, sameTab: true }]]);
-  let hostConn = null;
   const room = { closed: false };
   const list = () => [...members.values()].map(m => ({ peer: m.peer, presence: m.presence, sameTab: !!m.sameTab }));
   const notify = left => { const ch = { peers: list(), left: left.map(peer => ({ peer })) }; for (const cb of peerCbs) try { cb(ch); } catch (e) {} };
   const fire = (topic, from, data) => { for (const cb of handlers[topic] || []) try { cb({ peer: from, data, sameTab: from === myId }); } catch (e) {} };
-  const send = (conn, msg) => { if (conn && conn.open) try { conn.send(msg); } catch (e) {} };
-  const sendAll = (msg, except) => { for (const m of members.values()) if (m.conn && m.peer !== except) send(m.conn, msg); };
+  const pub = (sub, obj) => { if (client.connected) try { client.publish(base + sub, JSON.stringify(obj), { qos: 0 }); } catch (e) {} };
   const lobKey = p => JSON.stringify(p && p.lob || null);
-  // Gastgeber: Spielerliste (nur Lobby-Daten) an alle schicken
-  const sendRoster = () => sendAll({ t: 'peers', list: [...members.values()].map(m => ({ peer: m.peer, lob: m.presence.lob || null })) });
-  if (isHost) peer.on('connection', conn => {
-    conn.on('open', () => {
-      if (room.closed) return conn.close();
-      members.set(conn.peer, { peer: conn.peer, presence: {}, conn });
-      sendRoster(); notify([]);
-    });
-    conn.on('data', msg => {
-      const m = members.get(conn.peer); if (!m || !msg) return;
-      if (msg.t === 'pres' && msg.p && typeof msg.p === 'object'){
-        const before = lobKey(m.presence);
-        m.presence = Object.assign({}, m.presence, msg.p);
-        if (lobKey(m.presence) !== before){ sendRoster(); notify([]); }
-      } else if (msg.t === 'ev' && typeof msg.topic === 'string'){
-        sendAll({ t: 'ev', topic: msg.topic, data: msg.data, from: conn.peer }, conn.peer);
-        fire(msg.topic, conn.peer, msg.data);
-      }
-    });
-    const gone = () => { if (members.delete(conn.peer)){ sendRoster(); notify([conn.peer]); } };
-    conn.on('close', gone); conn.on('error', gone);
+  const sendLob = () => pub('p/' + myId, { lob: members.get(myId).presence.lob || null });
+
+  client.on('message', (topic, buf) => {
+    if (room.closed || !topic.startsWith(base)) return;
+    let msg; try { msg = JSON.parse(buf.toString()); } catch (e) { return; }
+    if (!msg || typeof msg !== 'object') return;
+    const [kind, id] = topic.slice(base.length).split('/');
+    const from = kind === 'e' ? msg.f : id;
+    if (!from || from === myId) return;
+    if (kind === 'p'){
+      if (msg.bye){ if (members.delete(from)) notify([from]); return; }
+      let m = members.get(from); const isNew = !m;
+      if (!m) members.set(from, m = { peer: from, presence: {} });
+      m.seen = Date.now();
+      const before = lobKey(m.presence);
+      m.presence = Object.assign({}, m.presence, { lob: msg.lob || null });
+      if (isNew) sendLob();   // Neue sollen uns sofort sehen
+      if (isNew || lobKey(m.presence) !== before) notify([]);
+    } else if (kind === 'i'){
+      const m = members.get(from);
+      if (m && Array.isArray(msg.in)){ m.presence.in = msg.in; m.seen = Date.now(); }
+    } else if (kind === 'e' && typeof msg.t === 'string') fire(msg.t, from, msg.d);
   });
-  room._useHost = conn => {
-    hostConn = conn;
-    conn.on('data', msg => {
-      if (!msg) return;
-      if (msg.t === 'peers' && Array.isArray(msg.list)){
-        const old = new Set(members.keys()), me = members.get(myId);
-        members.clear(); members.set(myId, me);
-        for (const p of msg.list) if (p && p.peer && p.peer !== myId) members.set(p.peer, { peer: p.peer, presence: p.lob ? { lob: p.lob } : {} });
-        notify([...old].filter(id => !members.has(id)));
-      } else if (msg.t === 'ev' && typeof msg.topic === 'string') fire(msg.topic, msg.from, msg.data);
-    });
-    const gone = () => { if (!room.closed && hostConn === conn) room._lost(); };
-    conn.on('close', gone); conn.on('error', gone);
-  };
-  // Verbindung weg: alle anderen gelten als gegangen
-  room._lost = () => {
-    if (room.closed) return;
-    const left = [...members.keys()].filter(id => id !== myId);
-    for (const id of left) members.delete(id);
+  // Nach einer kurzen Unterbrechung (z. B. Handy war kurz in einer anderen App) wieder melden
+  client.on('connect', () => { if (!room.closed) sendLob(); });
+
+  const subs = [base + 'p/+', base + 'e'].concat(asHost ? [base + 'i/+'] : []);
+  await new Promise(res => client.subscribe(subs, { qos: 0 }, () => res()));
+  sendLob();
+
+  // Alle 2 Sekunden "ich bin noch da" – wer 9 Sekunden lang nichts sendet, gilt als gegangen
+  const beat = setInterval(() => {
+    sendLob();
+    const now = Date.now(), left = [];
+    for (const m of members.values()) if (!m.sameTab && now - m.seen > 9000){ members.delete(m.peer); left.push(m.peer); }
     if (left.length) notify(left);
-    for (const cb of lostCbs) try { cb(); } catch (e) {}
-  };
+  }, 2000);
+
   const off = (arr, cb) => () => { const i = arr.indexOf(cb); if (i >= 0) arr.splice(i, 1); };
   Object.assign(room, {
     peers: list,
-    onPeers(cb, onLost){
-      peerCbs.push(cb); if (onLost) lostCbs.push(onLost);
+    onPeers(cb){
+      peerCbs.push(cb);
       setTimeout(() => { if (peerCbs.includes(cb)) cb({ peers: list(), left: [] }); }, 0);
-      return () => { off(peerCbs, cb)(); if (onLost) off(lostCbs, onLost)(); };
+      return off(peerCbs, cb);
     },
     on(topic, cb){ (handlers[topic] = handlers[topic] || []).push(cb); return off(handlers[topic], cb); },
     async presence(p){
       const me = members.get(myId), before = lobKey(me.presence);
       me.presence = Object.assign({}, me.presence, p);
-      const changed = lobKey(me.presence) !== before;
-      if (isHost){ if (changed){ sendRoster(); notify([]); } }
-      else { send(hostConn, { t: 'pres', p }); if (changed) notify([]); }
+      if (Array.isArray(p.in)) pub('i/' + myId, { in: p.in });
+      if (lobKey(me.presence) !== before){ sendLob(); notify([]); }
     },
     async emit(topic, data){
-      if (isHost) sendAll({ t: 'ev', topic, data, from: myId });
-      else send(hostConn, { t: 'ev', topic, data });
+      pub('e', { f: myId, t: topic, d: data });
       fire(topic, myId, data);
     },
     async leave(){
-      room.closed = true;
-      for (const m of members.values()) if (m.conn) try { m.conn.close(); } catch (e) {}
-      if (hostConn) try { hostConn.close(); } catch (e) {}
-      setTimeout(() => { try { peer.destroy(); } catch (e) {} }, 300);
+      if (room.closed) return;
+      room.closed = true; clearInterval(beat);
+      pub('p/' + myId, { bye: 1 });
+      setTimeout(() => { try { client.end(); } catch (e) {} }, 300);
     },
   });
+
+  // Gibt es diesen Raum schon mit einem anderen Gastgeber? Dann einen neuen Code würfeln.
+  if (asHost){
+    await new Promise(r => setTimeout(r, 1200));
+    if ([...members.values()].some(m => !m.sameTab && m.presence.lob && m.presence.lob.host)){ await room.leave(); throw { code: 'unavailable-id' }; }
+  }
   return room;
 }
 
@@ -3374,8 +3368,8 @@ async function mpOpen(){
       [mp.api, mp.user] = await Promise.all([C.use('room'), C.use('user')]);
       mpMsg(mp.api ? '' : 'Mehrspieler ist hier gerade nicht verfügbar. Bist du angemeldet und hat dir der Besitzer Zugriff als „Mitwirkender“ gegeben?');
     } else {
-      // Ohne claude.ai: direkte Verbindung zwischen den Geräten
-      mp.api = (await loadPeerJs()) ? p2pApi() : null;
+      // Ohne claude.ai: über einen öffentlichen Nachrichten-Server
+      mp.api = (await loadRelayLib()) ? relayApi() : null;
       mpMsg(mp.api ? '' : 'Keine Verbindung. Für Mehrspieler brauchst du Internet.');
     }
   }
@@ -3390,7 +3384,7 @@ async function mpEnter(code, asHost, tries = 0){
   } catch (e) {
     const c = e && e.code;
     // Code schon vergeben: einfach einen neuen würfeln
-    if (asHost && c === 'unavailable-id' && tries < 4) return mpEnter(pick(MP_WORDS) + '-' + (10 + Math.floor(Math.random() * 90)), true, tries + 1);
+    if (asHost && c === 'unavailable-id' && tries < 4) return mpEnter(pick(MP_WORDS) + '-' + (100 + Math.floor(Math.random() * 900)), true, tries + 1);
     mpMsg(c === 'limit_reached' ? 'Gerade sind zu viele Räume offen. Versuch es gleich noch einmal.'
       : c === 'peer-unavailable' ? 'Kein Raum mit diesem Code gefunden. Stimmt der Code, und ist der Gastgeber noch im Raum?'
       : mp.api.p2p ? 'Keine Verbindung zum Raum. Bist du im Internet?'
@@ -3723,7 +3717,7 @@ function mpAbort(text){
 
 // Knöpfe der Mehrspieler-Seite
 $('mpBtn').onclick = () => mpOpen();
-$('mpCreate').onclick = () => mpEnter(pick(MP_WORDS) + '-' + (10 + Math.floor(Math.random() * 90)), true);
+$('mpCreate').onclick = () => mpEnter(pick(MP_WORDS) + '-' + (100 + Math.floor(Math.random() * 900)), true);
 $('mpJoin').onclick = () => mpEnter($('mpCode').value, false);
 $('mpCode').onkeydown = ev => { if (ev.key === 'Enter') mpEnter($('mpCode').value, false); };
 $('mpTeamBlue').onclick = () => { mp.team = 'blue'; mpUpdatePresence(); mpRenderLobby(); };
