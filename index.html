@@ -228,6 +228,44 @@
   .mapbtn{padding:8px 12px;font-size:15px}
   .mapbtn canvas{display:block;margin:0 auto 4px;border-radius:6px}
   .mode.on{background:#ffd23f;color:#3a2200;border-color:#ffd23f;box-shadow:0 4px 0 #b3851e}
+  /* Startseite (Lobby mit Reitern) */
+  #menu.lobby{justify-content:flex-start;gap:12px;padding:0 12px calc(76px + env(safe-area-inset-bottom,0px));background:radial-gradient(ellipse at 50% 0%,#3a2a6e 0%,#1f1640 55%,#140e2a 100%)}
+  .lb-head{width:min(940px,100%);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding-top:calc(12px + env(safe-area-inset-top,0px))}
+  .lb-logo{font-size:clamp(24px,4.4vw,38px);font-weight:900;letter-spacing:2px;color:#fff;text-shadow:0 3px 0 #4a3d80}
+  .lb-logo span{color:#ffd23f;text-shadow:0 3px 0 #b3541e}
+  .lb-chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .lb-chip{font-size:14px;font-weight:800;background:rgba(20,14,40,.7);border:2px solid #4a3d80;border-radius:999px;padding:5px 12px;white-space:nowrap}
+  .lb-chip.gold{color:#ffd23f;border-color:#b3851e}
+  .lb-tabs{position:sticky;top:0;z-index:2;width:min(940px,100%);display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:6px;background:rgba(20,14,40,.85);backdrop-filter:blur(6px);border:2px solid #4a3d80;border-radius:16px;box-sizing:border-box}
+  .lb-tab{position:relative;font-size:22px;padding:8px 4px;border-radius:11px;background:transparent;color:#cfc6f5;box-shadow:none;display:flex;align-items:center;justify-content:center;gap:8px}
+  .lb-tab span{font-size:16px}
+  .lb-tab:hover{background:#2c2350}
+  .lb-tab.on{background:linear-gradient(180deg,#ffe36b,#ffb13b);color:#3a2200;box-shadow:0 3px 0 #b3541e}
+  .lb-dot{position:absolute;top:6px;right:8px;width:10px;height:10px;border-radius:50%;background:#ff4d5e;box-shadow:0 0 0 2px #1b1530}
+  .lb-dot.hidden{display:none}
+  .lb-page{width:min(940px,100%);display:flex;flex-direction:column;align-items:center;gap:12px;animation:lbIn .25s ease-out}
+  .lb-page.hidden{display:none}
+  .lb-page > *{max-width:100%}
+  @keyframes lbIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .lb-card{width:100%;box-sizing:border-box;background:rgba(44,35,80,.85);border:3px solid #4a3d80;border-radius:18px;padding:12px 14px;text-align:left}
+  .lb-card h3{margin:0 0 10px;font-size:17px;display:flex;align-items:center;gap:8px}
+  .lb-card h3 b{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#ffd23f;color:#3a2200;font-size:15px}
+  .lb-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+  .lb-grid .mode{width:100%;margin:0}
+  .lb-maps{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+  .lb-maps .mapbtn{width:100%;margin:0;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:8px}
+  .lb-maps .mapbtn canvas{width:100%;height:auto}
+  .lb-go{width:min(520px,100%);font-size:clamp(20px,3vw,26px);padding:14px 20px;border-radius:16px;background:linear-gradient(180deg,#ffe36b,#ffb13b);box-shadow:0 6px 0 #b3541e,0 0 24px rgba(255,210,63,.35)}
+  .lb-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:min(520px,100%)}
+  .lb-row .mode{width:100%;margin:0}
+  .lb-summary{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;background:rgba(20,14,40,.7);border:2px solid #4a3d80;border-radius:999px;padding:6px 8px 6px 16px;font-size:14px;font-weight:700;color:#cfc6f5}
+  .lb-pick{font-weight:800;color:#fff}
+  #menu.lobby .cards{max-width:none}
+  #menu.lobby .skins{flex-wrap:wrap}
+  #menu.lobby #profile,#menu.lobby #daily{width:100%}
+  #menu.lobby .help{font-size:14px;line-height:1.8;color:#cfc6f5}
+  @media (max-width:520px){ .lb-tab{flex-direction:column;gap:0;font-size:20px;padding:6px 2px} .lb-tab span{font-size:12px} .lb-row{grid-template-columns:1fr} .lb-grid{grid-template-columns:1fr 1fr} .lb-maps{grid-template-columns:repeat(3,1fr);gap:6px} .lb-maps .mapbtn{font-size:11px;padding:5px} .lb-card{padding:10px} .lb-grid .mode{padding:8px 6px;font-size:15px} }
+  @media (prefers-reduced-motion: reduce){ .lb-page{animation:none} }
   /* Intro */
   #intro{position:fixed;inset:0;z-index:30;background:radial-gradient(ellipse at 50% 120%,#5a2a7a 0%,#2a1a52 45%,#120c26 100%);overflow:hidden;cursor:pointer;transition:opacity .5s,transform .5s}
   #intro.out{opacity:0;transform:scale(1.08);pointer-events:none}
@@ -284,31 +322,67 @@
   <p class="sub" style="font-size:13px">Weiter mit <kbd>Esc</kbd> oder <kbd>P</kbd></p>
 </div>
 
-<div id="menu" class="overlay">
-  <h1>ARENA KRAWALL</h1>
-  <div id="profile"></div>
-  <div id="daily"></div>
-  <div class="modes">
-    <button class="mode on" data-mode="ko">⚔️ K.O.-Jagd<small>Erstes Team mit 10 K.O.s gewinnt</small></button>
-    <button class="mode" data-mode="zone">👑 Zonenkampf<small>Halte die Zone in der Mitte bis 100 %</small></button>
-    <button class="mode" data-mode="flag">🚩 Flaggenraub<small>Bring 3 gegnerische Flaggen nach Hause</small></button>
-    <button class="mode" data-mode="random">🎲 Zufällig<small>Jedes Spiel ein anderer Modus</small></button>
-  </div>
-  <div class="modes" id="maps"></div>
-  <div class="modes">
-    <button class="mode" data-diff="leicht">😊 Leicht<small>Gegner zielen schlecht</small></button>
-    <button class="mode on" data-diff="mittel">😐 Mittel<small>Ausgewogen</small></button>
-    <button class="mode" data-diff="schwer">😈 Schwer<small>Gegner weichen aus und spielen als Team</small></button>
-    <button class="mode on" id="pupBtn">✨ Power-ups: An<small>Schild, Tempo, Heilung, Kraft, Super-Ladung</small></button>
-  </div>
-  <div class="modes"><button class="mode mpbig" id="mpBtn">👥 Mehrspieler<small>Mit Freunden spielen – jeder auf seinem Gerät</small></button></div>
-  <p class="sub">Wähle deinen Helden: <button class="achbtn" id="trainBtn">🎯 Training – alle Helden ausprobieren</button></p>
-  <div class="cards" id="cards"></div>
-  <div class="help">
-    <kbd>W A S D</kbd> laufen &nbsp;·&nbsp; <kbd>Maus</kbd> zielen &nbsp;·&nbsp; <kbd>Linksklick</kbd> schießen &nbsp;·&nbsp; <kbd>E</kbd> / <kbd>Rechtsklick</kbd> Superkraft<br>
-    Im Gebüsch bist du unsichtbar. Wer nicht getroffen wird, heilt sich nach kurzer Zeit. <kbd>M</kbd> Ton an/aus · <kbd>N</kbd> Mini-Karte · <kbd>F</kbd> Vollbild · <kbd>Esc</kbd> Pause<br>
-    📱 Handy: linker Daumen laufen · 💥 tippen = schießen, halten = Dauerfeuer · rechts ziehen und loslassen = genau zielen
-  </div>
+<div id="menu" class="overlay lobby">
+  <header class="lb-head">
+    <div class="lb-logo">ARENA <span>KRAWALL</span></div>
+    <div class="lb-chips" id="lbChips"></div>
+  </header>
+  <nav class="lb-tabs" role="tablist">
+    <button class="lb-tab on" data-tab="play" role="tab">🎮<span>Spielen</span></button>
+    <button class="lb-tab" data-tab="heroes" role="tab">🦸<span>Helden</span></button>
+    <button class="lb-tab" data-tab="quests" role="tab">📋<span>Aufgaben</span></button>
+    <button class="lb-tab" data-tab="me" role="tab">🏆<span>Profil</span><i class="lb-dot hidden" id="lbMeDot"></i></button>
+  </nav>
+
+  <section class="lb-page" data-page="play">
+    <div class="lb-card">
+      <h3><b>1</b> Spielmodus</h3>
+      <div class="modes lb-grid">
+        <button class="mode on" data-mode="ko">⚔️ K.O.-Jagd<small>Erstes Team mit 10 K.O.s gewinnt</small></button>
+        <button class="mode" data-mode="zone">👑 Zonenkampf<small>Halte die Zone in der Mitte bis 100 %</small></button>
+        <button class="mode" data-mode="flag">🚩 Flaggenraub<small>Bring 3 gegnerische Flaggen nach Hause</small></button>
+        <button class="mode" data-mode="random">🎲 Zufällig<small>Jedes Spiel ein anderer Modus</small></button>
+      </div>
+    </div>
+    <div class="lb-card">
+      <h3><b>2</b> Karte</h3>
+      <div class="modes lb-maps" id="maps"></div>
+    </div>
+    <div class="lb-card">
+      <h3><b>3</b> Gegner</h3>
+      <div class="modes lb-grid">
+        <button class="mode" data-diff="leicht">😊 Leicht<small>Gegner zielen schlecht</small></button>
+        <button class="mode on" data-diff="mittel">😐 Mittel<small>Ausgewogen</small></button>
+        <button class="mode" data-diff="schwer">😈 Schwer<small>Gegner weichen aus und spielen als Team</small></button>
+        <button class="mode on" id="pupBtn">✨ Power-ups: An<small>Schild, Tempo, Heilung, Kraft, Super-Ladung</small></button>
+      </div>
+    </div>
+    <button class="lb-go" id="lbToHeroes">▶ WEITER: HELD WÄHLEN</button>
+    <div class="lb-row">
+      <button class="mode mpbig" id="mpBtn">👥 Mehrspieler<small>Mit Freunden – jeder auf seinem Gerät</small></button>
+      <button class="mode" id="trainBtn">🎯 Training<small>Alle Helden in Ruhe ausprobieren</small></button>
+    </div>
+  </section>
+
+  <section class="lb-page hidden" data-page="heroes">
+    <div class="lb-summary"><span id="lbSummary"></span><button class="achbtn" id="lbChange">✏️ Ändern</button></div>
+    <p class="sub lb-pick">Tippe auf deinen Helden – dann geht's los!</p>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section class="lb-page hidden" data-page="quests">
+    <div id="daily"></div>
+  </section>
+
+  <section class="lb-page hidden" data-page="me">
+    <div id="profile"></div>
+    <div class="lb-card help">
+      <h3>🎮 Steuerung</h3>
+      <kbd>W A S D</kbd> laufen &nbsp;·&nbsp; <kbd>Maus</kbd> zielen &nbsp;·&nbsp; <kbd>Linksklick</kbd> schießen &nbsp;·&nbsp; <kbd>E</kbd> / <kbd>Rechtsklick</kbd> Superkraft<br>
+      Im Gebüsch bist du unsichtbar. Wer nicht getroffen wird, heilt sich nach kurzer Zeit. <kbd>M</kbd> Ton an/aus · <kbd>N</kbd> Mini-Karte · <kbd>F</kbd> Vollbild · <kbd>Esc</kbd> Pause<br>
+      📱 Handy: linker Daumen laufen · 💥 tippen = schießen, halten = Dauerfeuer · rechts ziehen und loslassen = genau zielen
+    </div>
+  </section>
 </div>
 
 <div id="mp" class="overlay hidden">
@@ -3761,6 +3835,28 @@ $('mpBack').onclick = async () => {
   await mpLeave();
   $('mp').classList.add('hidden'); $('menu').classList.remove('hidden');
 };
+
+// ================== STARTSEITE: REITER ==================
+function lbTab(name){
+  document.querySelectorAll('.lb-tab').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.lb-page').forEach(p => p.classList.toggle('hidden', p.dataset.page !== name));
+  if (name === 'heroes') lbSummary();
+  $('menu').scrollTop = 0;
+}
+function lbSummary(){
+  $('lbSummary').textContent = `${randomMode ? '🎲 Zufällig' : MODE_NAMES[mode]} · ${randomMap ? '🎲 Zufallskarte' : MAPS[mapIdx].icon + ' ' + MAPS[mapIdx].name} · ${DIFF[diff].name}${powerOn ? ' · ✨' : ''}`;
+}
+// Oben rechts: Pokale und Rang; roter Punkt beim Profil, wenn Belohnungen warten
+function lbChips(){
+  const r = rankOf(prog.trophies);
+  $('lbChips').innerHTML = `<span class="lb-chip gold">🏆 ${prog.trophies}</span><span class="lb-chip" style="color:${r.color};border-color:${r.color}">${r.name}</span><span class="lb-chip">🎫 Stufe ${passTier()}</span>`;
+  $('lbMeDot').classList.toggle('hidden', !(passClaimable() || (isDecember() && adventReady())));
+}
+document.querySelectorAll('.lb-tab').forEach(b => b.onclick = () => lbTab(b.dataset.tab));
+$('lbToHeroes').onclick = () => lbTab('heroes');
+$('lbChange').onclick = () => lbTab('play');
+{ const orig = renderProfile; renderProfile = function(){ orig(); lbChips(); }; }
+lbChips();
 
 // ================== INTRO ==================
 // Startbildschirm: alle Helden auf der Bühne, Feuerwerk aus ihren Schüssen, großes Logo.

@@ -1,5 +1,5 @@
 // Speichert alle Dateien der App, damit sie ohne Internet startet.
-const CACHE = 'arena-krawall-20261101-191406';
+const CACHE = 'arena-krawall-20261101-192919';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
