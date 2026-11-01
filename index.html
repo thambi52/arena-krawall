@@ -285,7 +285,7 @@
     <p class="sub" style="font-size:14px">oder einem Raum beitreten:</p>
     <div class="mprow"><input id="mpCode" placeholder="Code, z. B. TIGER-42" maxlength="24" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Raum-Code"><button id="mpJoin" class="pbtn">Beitreten</button></div>
     <p class="mpmsg" id="mpMsg"></p>
-    <p class="sub" style="font-size:12px">Alle brauchen ein claude.ai-Konto und Zugriff auf das Spiel als „Mitwirkender“ (Teilen-Menü).</p>
+    <p class="sub" style="font-size:12px" id="mpHint">Alle brauchen ein claude.ai-Konto und Zugriff auf das Spiel als „Mitwirkender“ (Teilen-Menü).</p>
   </div>
   <div id="mpLobby" class="mpbox hidden">
     <p class="sub" style="margin:0">Raum-Code für deine Freunde:</p>
@@ -878,11 +878,9 @@ const CLOUD_TEXT = {
   ok: '☁️ Im Konto gespeichert – auf allen Geräten gleich',
   error: '⚠️ Konto-Speicher gerade nicht erreichbar – vorerst nur hier gespeichert',
 };
-// Als installierte Offline-App (ohne claude.ai) gibt es keinen Konto-Speicher und keinen Mehrspieler-Modus
-if (window.ARENA_OFFLINE){
-  CLOUD_TEXT.local = '💾 Gespeichert auf diesem Gerät';
-  document.getElementById('mpBtn').parentElement.style.display = 'none';
-}
+// Als installierte App (ohne claude.ai) gibt es keinen Konto-Speicher; Mehrspieler läuft dort direkt zwischen den Geräten
+if (window.ARENA_OFFLINE) CLOUD_TEXT.local = '💾 Gespeichert auf diesem Gerät';
+if (!window.claude) document.getElementById('mpHint').textContent = 'Alle brauchen Internet. Der Gastgeber schickt den anderen den Raum-Code.';
 function setCloudStatus(s){
   cloud.status = s;
   const el = document.getElementById('cloudInfo');
@@ -3229,6 +3227,125 @@ const mp = {
   shots: 0, supers: 0, aim: 0, presT: 0, snapT: 0, bulletSeq: 0, seen: {}, peerMap: new Map(),
   lastSnapAt: 0, savedPower: null, prevMode: null, prevMap: null, prevDiff: null,
 };
+// ---------- Direkte Verbindung (ohne claude.ai) ----------
+// Die Geräte verbinden sich über WebRTC (Bibliothek PeerJS). Der Gastgeber ist der Mittelpunkt:
+// alle Mitspieler verbinden sich mit ihm, er verteilt Spielerliste und Nachrichten weiter.
+// Nach außen sieht das genauso aus wie ein claude.ai-Raum (peers, presence, emit, on, onPeers, leave).
+const P2P_PREFIX = 'arena-krawall-raum-';
+function loadPeerJs(){
+  if (window.Peer) return Promise.resolve(true);
+  return new Promise(res => {
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+    s.onload = () => res(!!window.Peer); s.onerror = () => res(false);
+    document.head.appendChild(s);
+  });
+}
+const p2pApi = () => ({ p2p: true, join: (code, asHost) => p2pJoin(code, asHost) });
+function p2pJoin(code, asHost){
+  return new Promise((resolve, reject) => {
+    const peer = asHost ? new Peer(P2P_PREFIX + code) : new Peer();
+    let room = null, done = false;
+    // Fehler nach dem Betreten (z. B. Vermittlungs-Server kurz weg) stören laufende Verbindungen nicht
+    const fail = err => { if (!done){ done = true; try { peer.destroy(); } catch (e) {} reject(err); } };
+    peer.on('error', err => fail({ code: err.type }));
+    peer.on('disconnected', () => { if (room && !room.closed) try { peer.reconnect(); } catch (e) {} });
+    peer.on('open', id => {
+      if (room) return;   // nach einem Neuverbinden
+      room = p2pRoom(peer, id, asHost);
+      if (asHost){ done = true; resolve(room); return; }
+      const conn = peer.connect(P2P_PREFIX + code, { serialization: 'json', reliable: true });
+      const t = setTimeout(() => fail({ code: 'peer-unavailable' }), 12000);
+      conn.on('open', () => { clearTimeout(t); room._useHost(conn); done = true; resolve(room); });
+    });
+  });
+}
+function p2pRoom(peer, myId, isHost){
+  const handlers = {}, peerCbs = [], lostCbs = [];
+  const members = new Map([[myId, { peer: myId, presence: {}, sameTab: true }]]);
+  let hostConn = null;
+  const room = { closed: false };
+  const list = () => [...members.values()].map(m => ({ peer: m.peer, presence: m.presence, sameTab: !!m.sameTab }));
+  const notify = left => { const ch = { peers: list(), left: left.map(peer => ({ peer })) }; for (const cb of peerCbs) try { cb(ch); } catch (e) {} };
+  const fire = (topic, from, data) => { for (const cb of handlers[topic] || []) try { cb({ peer: from, data, sameTab: from === myId }); } catch (e) {} };
+  const send = (conn, msg) => { if (conn && conn.open) try { conn.send(msg); } catch (e) {} };
+  const sendAll = (msg, except) => { for (const m of members.values()) if (m.conn && m.peer !== except) send(m.conn, msg); };
+  const lobKey = p => JSON.stringify(p && p.lob || null);
+  // Gastgeber: Spielerliste (nur Lobby-Daten) an alle schicken
+  const sendRoster = () => sendAll({ t: 'peers', list: [...members.values()].map(m => ({ peer: m.peer, lob: m.presence.lob || null })) });
+  if (isHost) peer.on('connection', conn => {
+    conn.on('open', () => {
+      if (room.closed) return conn.close();
+      members.set(conn.peer, { peer: conn.peer, presence: {}, conn });
+      sendRoster(); notify([]);
+    });
+    conn.on('data', msg => {
+      const m = members.get(conn.peer); if (!m || !msg) return;
+      if (msg.t === 'pres' && msg.p && typeof msg.p === 'object'){
+        const before = lobKey(m.presence);
+        m.presence = Object.assign({}, m.presence, msg.p);
+        if (lobKey(m.presence) !== before){ sendRoster(); notify([]); }
+      } else if (msg.t === 'ev' && typeof msg.topic === 'string'){
+        sendAll({ t: 'ev', topic: msg.topic, data: msg.data, from: conn.peer }, conn.peer);
+        fire(msg.topic, conn.peer, msg.data);
+      }
+    });
+    const gone = () => { if (members.delete(conn.peer)){ sendRoster(); notify([conn.peer]); } };
+    conn.on('close', gone); conn.on('error', gone);
+  });
+  room._useHost = conn => {
+    hostConn = conn;
+    conn.on('data', msg => {
+      if (!msg) return;
+      if (msg.t === 'peers' && Array.isArray(msg.list)){
+        const old = new Set(members.keys()), me = members.get(myId);
+        members.clear(); members.set(myId, me);
+        for (const p of msg.list) if (p && p.peer && p.peer !== myId) members.set(p.peer, { peer: p.peer, presence: p.lob ? { lob: p.lob } : {} });
+        notify([...old].filter(id => !members.has(id)));
+      } else if (msg.t === 'ev' && typeof msg.topic === 'string') fire(msg.topic, msg.from, msg.data);
+    });
+    const gone = () => { if (!room.closed && hostConn === conn) room._lost(); };
+    conn.on('close', gone); conn.on('error', gone);
+  };
+  // Verbindung weg: alle anderen gelten als gegangen
+  room._lost = () => {
+    if (room.closed) return;
+    const left = [...members.keys()].filter(id => id !== myId);
+    for (const id of left) members.delete(id);
+    if (left.length) notify(left);
+    for (const cb of lostCbs) try { cb(); } catch (e) {}
+  };
+  const off = (arr, cb) => () => { const i = arr.indexOf(cb); if (i >= 0) arr.splice(i, 1); };
+  Object.assign(room, {
+    peers: list,
+    onPeers(cb, onLost){
+      peerCbs.push(cb); if (onLost) lostCbs.push(onLost);
+      setTimeout(() => { if (peerCbs.includes(cb)) cb({ peers: list(), left: [] }); }, 0);
+      return () => { off(peerCbs, cb)(); if (onLost) off(lostCbs, onLost)(); };
+    },
+    on(topic, cb){ (handlers[topic] = handlers[topic] || []).push(cb); return off(handlers[topic], cb); },
+    async presence(p){
+      const me = members.get(myId), before = lobKey(me.presence);
+      me.presence = Object.assign({}, me.presence, p);
+      const changed = lobKey(me.presence) !== before;
+      if (isHost){ if (changed){ sendRoster(); notify([]); } }
+      else { send(hostConn, { t: 'pres', p }); if (changed) notify([]); }
+    },
+    async emit(topic, data){
+      if (isHost) sendAll({ t: 'ev', topic, data, from: myId });
+      else send(hostConn, { t: 'ev', topic, data });
+      fire(topic, myId, data);
+    },
+    async leave(){
+      room.closed = true;
+      for (const m of members.values()) if (m.conn) try { m.conn.close(); } catch (e) {}
+      if (hostConn) try { hostConn.close(); } catch (e) {}
+      setTimeout(() => { try { peer.destroy(); } catch (e) {} }, 300);
+    },
+  });
+  return room;
+}
+
 const MP_WORDS = ['tiger', 'panda', 'blitz', 'komet', 'drache', 'pirat', 'ninja', 'rakete', 'vulkan', 'eis', 'sturm', 'falke'];
 const BCOL = ['#ffb36b', '#aef0ff', '#ffffff', '#d6ff9e', '#ffc2e6', '#d8c8ff', '#d8f6ff', '#bff0ff'];
 const PUP_KEYS = Object.keys(PUPS);
@@ -3252,21 +3369,32 @@ async function mpOpen(){
   mpShowStart(); mpMsg('');
   if (!mp.api){
     const C = window.claude;
-    if (!C || typeof C.use !== 'function'){ mpMsg('Mehrspieler geht nur in der Web-Version auf claude.ai (mit Anmeldung).'); return; }
     mpMsg('Verbinde …');
-    [mp.api, mp.user] = await Promise.all([C.use('room'), C.use('user')]);
-    mpMsg(mp.api ? '' : 'Mehrspieler ist hier gerade nicht verfügbar. Bist du angemeldet und hat dir der Besitzer Zugriff als „Mitwirkender“ gegeben?');
+    if (C && typeof C.use === 'function'){
+      [mp.api, mp.user] = await Promise.all([C.use('room'), C.use('user')]);
+      mpMsg(mp.api ? '' : 'Mehrspieler ist hier gerade nicht verfügbar. Bist du angemeldet und hat dir der Besitzer Zugriff als „Mitwirkender“ gegeben?');
+    } else {
+      // Ohne claude.ai: direkte Verbindung zwischen den Geräten
+      mp.api = (await loadPeerJs()) ? p2pApi() : null;
+      mpMsg(mp.api ? '' : 'Keine Verbindung. Für Mehrspieler brauchst du Internet.');
+    }
   }
 }
-async function mpEnter(code, asHost){
+async function mpEnter(code, asHost, tries = 0){
   if (!mp.api){ await mpOpen(); if (!mp.api) return; }
   code = normCode(code);
   if (!code){ mpMsg('Bitte gib einen Code ein.'); return; }
   mpMsg('Betrete Raum …');
   try {
-    mp.room = await mp.api.join('arena-' + code);
+    mp.room = mp.api.p2p ? await mp.api.join(code, asHost) : await mp.api.join('arena-' + code);
   } catch (e) {
-    mpMsg(e && e.code === 'limit_reached' ? 'Gerade sind zu viele Räume offen. Versuch es gleich noch einmal.' : 'Raum konnte nicht betreten werden. Bist du angemeldet?');
+    const c = e && e.code;
+    // Code schon vergeben: einfach einen neuen würfeln
+    if (asHost && c === 'unavailable-id' && tries < 4) return mpEnter(pick(MP_WORDS) + '-' + (10 + Math.floor(Math.random() * 90)), true, tries + 1);
+    mpMsg(c === 'limit_reached' ? 'Gerade sind zu viele Räume offen. Versuch es gleich noch einmal.'
+      : c === 'peer-unavailable' ? 'Kein Raum mit diesem Code gefunden. Stimmt der Code, und ist der Gastgeber noch im Raum?'
+      : mp.api.p2p ? 'Keine Verbindung zum Raum. Bist du im Internet?'
+      : 'Raum konnte nicht betreten werden. Bist du angemeldet?');
     return;
   }
   mp.code = code; mp.isHost = asHost;
