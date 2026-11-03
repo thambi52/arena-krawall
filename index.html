@@ -435,6 +435,7 @@
   <div class="setbox">
     <label class="setrow" for="setMusic"><span>🎵 Musik</span><input type="range" id="setMusic" min="0" max="100" step="5"><b id="setMusicVal"></b></label>
     <label class="setrow" for="setSfx"><span>🔊 Effekte<small>Schüsse, Treffer, Explosionen …</small></span><input type="range" id="setSfx" min="0" max="100" step="5"><b id="setSfxVal"></b></label>
+    <label class="setrow" for="set3d"><span>🧊 3D-Ansicht<small>Arena in 3D mit Licht und Schatten. Braucht beim ersten Mal Internet. Aus = klassisch von oben</small></span><input type="checkbox" id="set3d"></label>
     <label class="setrow" for="setShake"><span>📳 Bildschirm wackelt bei Treffern</span><input type="checkbox" id="setShake"></label>
     <label class="setrow" for="setNums"><span>🔢 Schadenszahlen anzeigen</span><input type="checkbox" id="setNums"></label>
     <label class="setrow" for="setMini"><span>🗺️ Mini-Karte anzeigen<small>Im Spiel auch mit Taste N</small></span><input type="checkbox" id="setMini"></label>
@@ -1573,7 +1574,7 @@ function endGame(){
 }
 
 // ================== EINSTELLUNGEN ==================
-let settings = { music: .6, sfx: .8, shake: true, dmgNums: true, minimap: true };
+let settings = { music: .6, sfx: .8, shake: true, dmgNums: true, minimap: true, view3d: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('arenaSettings')) || {}); } catch (e) {}
 function saveSettings(){
   try { localStorage.setItem('arenaSettings', JSON.stringify(settings)); } catch (e) {}
@@ -1906,8 +1907,10 @@ function playerInput(e){
     } else if (Math.hypot(dx, dy) > .2 && !mouse.down) e.aim = Math.atan2(dy, dx);
     return;
   }
-  e.aim = Math.atan2(mouse.y + cam.y - e.y, mouse.x + cam.x - e.x);
-  e.aimDist = Math.hypot(mouse.y + cam.y - e.y, mouse.x + cam.x - e.x);
+  // Wohin zeigt die Maus in der Welt? (in 3D über einen Strahl auf den Boden)
+  const w = r3Active() ? r3ScreenToWorld(mouse.x, mouse.y) : { x: mouse.x + cam.x, y: mouse.y + cam.y };
+  e.aim = Math.atan2(w.y - e.y, w.x - e.x);
+  e.aimDist = Math.hypot(w.y - e.y, w.x - e.x);
   if (mouse.down) tryAttack(e, e.aim);
 }
 
@@ -2537,6 +2540,12 @@ function drawBars(e){
 }
 
 function draw(){
+  // 3D-Ansicht (lädt beim ersten Mal Three.js; ohne Internet bleibt es bei 2D)
+  if (settings.view3d && player){
+    if (R3.state === 'off') r3Load();
+    if (R3.state === 'ready'){ r3Draw(); return; }
+  }
+  if (R3.canvas) R3.canvas.style.display = 'none';
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.fillStyle = TH.bg; ctx.fillRect(0, 0, VW, VH);
   if (!player) return;
@@ -2709,6 +2718,340 @@ function draw(){
   }
   ctx.globalAlpha = 1;
   ctx.restore();
+  if (isDecember()) drawSnow();
+  drawHud();
+}
+
+// ================== 3D-ANSICHT ==================
+// Die Arena wird mit Three.js in echtem 3D gezeichnet: Boden, Wände, Büsche, Wasser, Schüsse, Licht und Schatten.
+// Die Helden bleiben die gezeichneten Figuren – als aufrechte Bilder in der 3D-Welt (so passen alle Skins).
+// Lebensbalken, Namen, Flaggen, Power-ups und die Anzeigen zeichnet weiter die 2D-Fläche obendrauf.
+const R3 = { state: 'off', mapRef: null, sprites: new Map(), balls: [], ballMats: {}, w: 0, h: 0 };
+const R3_PHI = .62;      // Kamera-Neigung (0 = genau von oben)
+const r3Active = () => settings.view3d && R3.state === 'ready' && R3.canvas && R3.canvas.style.display === 'block';
+const R3_WALL = 54;      // Wandhöhe
+function r3Load(){
+  if (R3.state !== 'off') return;
+  R3.state = 'loading';
+  const s = document.createElement('script');
+  s.src = 'https://unpkg.com/three@0.158.0/build/three.min.js';
+  s.onload = () => { try { r3Init(); R3.state = 'ready'; } catch (e) { R3.state = 'failed'; } };
+  s.onerror = () => { R3.state = 'failed'; };
+  document.head.appendChild(s);
+}
+function r3Init(){
+  const c = document.createElement('canvas');
+  c.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:-1;display:none';
+  document.body.insertBefore(c, cv);
+  document.body.style.background = 'transparent';   // sonst verdeckt der Seiten-Hintergrund die 3D-Fläche (html behält die Farbe)
+  const rd = new THREE.WebGLRenderer({ canvas: c, antialias: true });
+  rd.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  rd.shadowMap.enabled = true; rd.shadowMap.type = THREE.PCFSoftShadowMap;
+  const scene = new THREE.Scene();
+  const cam3 = new THREE.PerspectiveCamera(40, 1, 20, 8000);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x50406a, 1.6));
+  const sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
+  sun.castShadow = true;
+  const sz = touch.on ? 1024 : 2048;
+  sun.shadow.mapSize.set(sz, sz);
+  Object.assign(sun.shadow.camera, { left: -WW * .6, right: WW * .6, top: WH * .6, bottom: -WH * .6, near: 100, far: 4000 });
+  sun.shadow.bias = -.002;
+  sun.position.set(WW / 2 - 500, 1400, WH / 2 + 300); sun.target.position.set(WW / 2, 0, WH / 2);
+  scene.add(sun, sun.target);
+  // Fläche für Bodenmarkierungen, die sich jedes Bild ändern (Zone, Zielhilfe, Schatten …)
+  const dc = document.createElement('canvas'); dc.width = WW / 2; dc.height = WH / 2;
+  const dtex = new THREE.CanvasTexture(dc); dtex.colorSpace = THREE.SRGBColorSpace;
+  const dyn = new THREE.Mesh(new THREE.PlaneGeometry(WW, WH), new THREE.MeshBasicMaterial({ map: dtex, transparent: true, depthWrite: false }));
+  dyn.rotation.x = -Math.PI / 2; dyn.position.set(WW / 2, 2.5, WH / 2); dyn.renderOrder = 1;
+  scene.add(dyn);
+  Object.assign(R3, { canvas: c, rd, scene, cam3, sun, dc, dp: dc.getContext('2d'), dtex,
+    ray: new THREE.Raycaster(), ground: new THREE.Plane(new THREE.Vector3(0, 1, 0), -20), v: new THREE.Vector3(), ballGeo: new THREE.SphereGeometry(1, 14, 10) });
+}
+function r3Dispose(o){
+  o.traverse(x => {
+    if (x.geometry) x.geometry.dispose();
+    for (const m of [].concat(x.material || [])){ if (m.map) m.map.dispose(); m.dispose(); }
+  });
+}
+// Karte als 3D-Modell bauen (einmal pro Karte)
+function r3BuildMap(){
+  const { scene } = R3;
+  if (R3.map){ scene.remove(R3.map); r3Dispose(R3.map); }
+  const g = new THREE.Group(); R3.map = g; R3.mapRef = MAP;
+  scene.background = new THREE.Color(TH.bg);
+  const col = c => new THREE.Color(c);
+  const tiles = ch => { const out = []; MAP.forEach((row, y) => [...row].forEach((c, x) => { if (c === ch) out.push([x, y]); })); return out; };
+  // Boden: Schachbrett, Wasser, Mittellinie, Startzonen
+  const bc = document.createElement('canvas'); bc.width = WW; bc.height = WH;
+  const p = bc.getContext('2d');
+  MAP.forEach((row, y) => [...row].forEach((c, x) => {
+    p.fillStyle = c === 'w' ? TH.water : (x + y) % 2 ? TH.g1 : TH.g2; p.fillRect(x * T, y * T, T, T);
+  }));
+  p.strokeStyle = 'rgba(255,255,255,.3)'; p.lineWidth = 5; p.setLineDash([16, 14]);
+  p.beginPath(); p.moveTo(WW / 2, T); p.lineTo(WW / 2, WH - T); p.stroke(); p.setLineDash([]);
+  for (const team of ['blue', 'red']){
+    p.fillStyle = team === 'blue' ? 'rgba(61,139,255,.22)' : 'rgba(255,77,94,.22)';
+    p.fillRect(team === 'blue' ? T : WW - 2 * T, T, T, WH - 2 * T);
+  }
+  const gtex = new THREE.CanvasTexture(bc); gtex.colorSpace = THREE.SRGBColorSpace; gtex.anisotropy = 4;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(WW, WH), new THREE.MeshLambertMaterial({ map: gtex }));
+  ground.rotation.x = -Math.PI / 2; ground.position.set(WW / 2, 0, WH / 2); ground.receiveShadow = true;
+  g.add(ground);
+  // Sockel unter der Arena
+  const base = new THREE.Mesh(new THREE.BoxGeometry(WW + 120, 60, WH + 120), new THREE.MeshLambertMaterial({ color: col(TH.wallSide) }));
+  base.position.set(WW / 2, -31, WH / 2); g.add(base);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pos = new THREE.Vector3();
+  // Wände: Klötze mit hellem Deckel
+  const walls = tiles('#');
+  if (walls.length){
+    const side = new THREE.MeshLambertMaterial({ color: col(TH.wallSide) }), top = new THREE.MeshLambertMaterial({ color: col(TH.wallTop) });
+    const wm = new THREE.InstancedMesh(new THREE.BoxGeometry(T, R3_WALL, T), [side, side, top, side, side, side], walls.length);
+    walls.forEach(([x, y], i) => wm.setMatrixAt(i, m4.makeTranslation(x * T + T / 2, R3_WALL / 2, y * T + T / 2)));
+    wm.castShadow = true; wm.receiveShadow = true; g.add(wm);
+  }
+  // Wasser bzw. Lava: schimmernde Fläche, die sich in jedem Bild ein wenig ändert
+  const water = tiles('w');
+  if (water.length){
+    const wmat = new THREE.MeshLambertMaterial({ color: TH.lava ? col('#ffb13b') : col('#ffffff'), transparent: true, opacity: .25,
+      emissive: TH.lava ? col('#ff5a1f') : col('#000000') });
+    const wgeo = new THREE.PlaneGeometry(T, T); wgeo.rotateX(-Math.PI / 2);
+    const wm = new THREE.InstancedMesh(wgeo, wmat, water.length);
+    water.forEach(([x, y], i) => wm.setMatrixAt(i, m4.makeTranslation(x * T + T / 2, 1.5, y * T + T / 2)));
+    g.add(wm); R3.waterMat = wmat;
+  } else R3.waterMat = null;
+  // Gebüsch: runde Blätter-Kugeln
+  const bushes = tiles('b');
+  if (bushes.length){
+    const geo = new THREE.IcosahedronGeometry(1, 1);
+    const b1 = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: col(TH.bush1), flatShading: true }), bushes.length * 5);
+    const b2 = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: col(TH.bush2), flatShading: true }), bushes.length * 2);
+    let i = 0, j = 0;
+    for (const [x, y] of bushes){
+      for (const [ox, oy] of [[18, 20], [46, 18], [20, 46], [46, 46], [32, 32]]){
+        const r = 21 + ((x * 7 + y * 3 + ox) % 5);
+        b1.setMatrixAt(i++, m4.compose(pos.set(x * T + ox, r * .7, y * T + oy), q, sc.set(r, r * .95, r)));
+      }
+      for (const [ox, oy] of [[22, 24], [42, 40]]) b2.setMatrixAt(j++, m4.compose(pos.set(x * T + ox, 34, y * T + oy), q, sc.set(11, 10, 11)));
+    }
+    b1.castShadow = b2.castShadow = true; b1.receiveShadow = true;
+    g.add(b1, b2);
+  }
+  scene.add(g);
+}
+// Held als aufrechtes Bild: jedes Bild neu gemalt (Zielrichtung, Skin, Durchsichtigkeit)
+function r3Sprite(e){
+  let s = R3.sprites.get(e);
+  if (!s){
+    const c = document.createElement('canvas'); c.width = c.height = 160;
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, alphaTest: .04 }));
+    R3.scene.add(sp);
+    s = { c, p: c.getContext('2d'), tex, sp }; R3.sprites.set(e, s);
+  }
+  return s;
+}
+function r3Ball(i, color){
+  let m = R3.balls[i];
+  if (!m){ m = new THREE.Mesh(R3.ballGeo, null); m.castShadow = true; R3.scene.add(m); R3.balls[i] = m; }
+  let mat = R3.ballMats[color];
+  if (!mat) mat = R3.ballMats[color] = new THREE.MeshBasicMaterial({ color: new THREE.Color(color) });
+  m.material = mat; m.visible = true;
+  return m;
+}
+// Welt-Punkt (x, Höhe, y) -> Bildschirm, mit Maßstab
+function r3Proj(x, h, y){
+  const v = R3.v.set(x, h, y).project(R3.cam3), sx = (v.x + 1) / 2 * VW, sy = (1 - v.y) / 2 * VH;
+  const v2 = R3.v.set(x + 40, h, y).project(R3.cam3);
+  return { x: sx, y: sy, s: Math.abs((v2.x + 1) / 2 * VW - sx) / 40, behind: v.z > 1 };
+}
+// Zeichnet mit den normalen 2D-Funktionen (Welt-Koordinaten), aber an die richtige Stelle im 3D-Bild
+function r3At(x, y, h, fn){
+  const P = r3Proj(x, h, y);
+  if (P.behind) return;
+  ctx.setTransform(DPR * P.s, 0, 0, DPR * P.s, DPR * (P.x - x * P.s), DPR * (P.y - y * P.s));
+  fn();
+}
+function r3ScreenToWorld(mx, my){
+  R3.ray.setFromCamera({ x: mx / VW * 2 - 1, y: -(my / VH * 2 - 1) }, R3.cam3);
+  const hit = R3.ray.ray.intersectPlane(R3.ground, R3.v);
+  return hit ? { x: hit.x, y: hit.z } : { x: mouse.x + cam.x, y: mouse.y + cam.y };
+}
+// Bodenmarkierungen dieses Bildes (Zone, Basen, Heilblumen, Zielhilfe, Schatten …)
+function r3Ground(list){
+  const p = R3.dp, now = performance.now();
+  p.setTransform(.5, 0, 0, .5, 0, 0); p.clearRect(0, 0, WW, WH);
+  // Schatten unter den Figuren
+  for (const e of list){
+    p.fillStyle = 'rgba(0,0,0,.3)'; p.beginPath(); p.ellipse(e.x, e.y + 4, e.r * 1.05, e.r * .6, 0, 0, Math.PI * 2); p.fill();
+    p.fillStyle = TEAMCOL[e.team]; p.globalAlpha = .5; p.beginPath(); p.ellipse(e.x, e.y + 4, e.r + 6, e.r * .7 + 4, 0, 0, Math.PI * 2); p.lineWidth = 4; p.strokeStyle = TEAMCOL[e.team]; p.stroke(); p.globalAlpha = 1;
+    if (e.powerT > 0){ p.strokeStyle = `rgba(255,138,61,${.5 + Math.sin(now / 100) * .3})`; p.lineWidth = 5; p.beginPath(); p.arc(e.x, e.y, e.r + 14, 0, Math.PI * 2); p.stroke(); }
+  }
+  // Zielhilfe
+  if (!player.dead && state === 'play'){
+    const a = player.aim, R = player.h.range;
+    p.fillStyle = 'rgba(255,255,255,.22)';
+    if (player.h.lob){
+      const d = clamp(player.aimDist, 60, R);
+      p.beginPath(); p.arc(player.x, player.y, R, 0, Math.PI * 2); p.strokeStyle = 'rgba(255,255,255,.25)'; p.lineWidth = 3; p.stroke();
+      p.beginPath(); p.arc(player.x + Math.cos(a) * d, player.y + Math.sin(a) * d, 75, 0, Math.PI * 2); p.fill();
+    } else {
+      const spread = SPREAD[player.key];
+      p.beginPath(); p.moveTo(player.x, player.y); p.arc(player.x, player.y, R, a - spread, a + spread); p.closePath(); p.fill();
+    }
+    if (player.super >= 1){
+      p.strokeStyle = 'rgba(255,210,63,.8)'; p.lineWidth = 5;
+      p.beginPath(); p.arc(player.x, player.y, player.r + 14 + Math.sin(now / 120) * 3, 0, Math.PI * 2); p.stroke();
+    }
+  }
+  if (mode === 'zone'){
+    const col = ZONE.owner === 'blue' ? '61,139,255' : ZONE.owner === 'red' ? '255,77,94' : ZONE.owner === 'fight' ? '255,210,63' : '255,255,255';
+    p.fillStyle = `rgba(${col},.22)`; p.strokeStyle = `rgba(${col},.9)`; p.lineWidth = 7;
+    p.setLineDash([18, 10]); p.lineDashOffset = -now / 40;
+    p.beginPath(); p.arc(ZONE.x, ZONE.y, ZONE.r * (1 + Math.sin(now / 250) * .03), 0, Math.PI * 2); p.fill(); p.stroke();
+    p.setLineDash([]);
+  }
+  if (mode === 'flag') for (const team of ['blue', 'red']){
+    const F = FLAGS[team];
+    p.fillStyle = team === 'blue' ? 'rgba(61,139,255,.25)' : 'rgba(255,77,94,.25)';
+    p.strokeStyle = TEAMCOL[team]; p.lineWidth = 6; p.setLineDash([12, 8]);
+    p.beginPath(); p.arc(F.home.x, F.home.y, FLAG_R, 0, Math.PI * 2); p.fill(); p.stroke(); p.setLineDash([]);
+  }
+  for (const s of pupSpots){
+    p.fillStyle = 'rgba(0,0,0,.2)'; p.beginPath(); p.ellipse(s.x, s.y + 6, 24, 12, 0, 0, Math.PI * 2); p.fill();
+    if (!s.type){ p.strokeStyle = 'rgba(255,255,255,.45)'; p.lineWidth = 4; p.beginPath(); p.arc(s.x, s.y + 6, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - s.t / PUP_RESPAWN)); p.stroke(); }
+  }
+  for (const z of zones){
+    p.fillStyle = z.team === 'blue' ? 'rgba(125,255,138,.25)' : 'rgba(255,122,200,.25)';
+    p.strokeStyle = z.team === 'blue' ? 'rgba(125,255,138,.8)' : 'rgba(255,122,200,.8)'; p.lineWidth = 4;
+    p.beginPath(); p.arc(z.x, z.y, z.r * (1 + Math.sin(now / 200) * .04), 0, Math.PI * 2); p.fill(); p.stroke();
+    for (let i = 0; i < 6; i++){
+      const a = i / 6 * Math.PI * 2 + now / 1500;
+      p.fillStyle = '#ffb3de'; p.beginPath(); p.arc(z.x + Math.cos(a) * 18, z.y + Math.sin(a) * 18, 12, 0, Math.PI * 2); p.fill();
+    }
+    p.fillStyle = '#ffd23f'; p.beginPath(); p.arc(z.x, z.y, 12, 0, Math.PI * 2); p.fill();
+  }
+  for (const b of bullets){
+    if (!b.lob) continue;
+    p.strokeStyle = b.team === player.team ? 'rgba(61,139,255,.7)' : 'rgba(255,77,94,.8)'; p.lineWidth = 4;
+    p.beginPath(); p.arc(b.tx, b.ty, b.rad, 0, Math.PI * 2); p.stroke();
+    p.fillStyle = 'rgba(0,0,0,.25)'; p.beginPath(); p.ellipse(b.x, b.y, b.big ? 18 : 11, b.big ? 8 : 5, 0, 0, Math.PI * 2); p.fill();
+  }
+  for (const r of rings){
+    const k = r.t / .45;
+    p.strokeStyle = r.ice ? `rgba(191,240,255,${1 - k})` : `rgba(255,230,120,${1 - k})`; p.lineWidth = 16 * (1 - k) + 3;
+    p.beginPath(); p.arc(r.x, r.y, r.max * k, 0, Math.PI * 2); p.stroke();
+  }
+  R3.dtex.needsUpdate = true;
+}
+function r3Draw(){
+  if (R3.mapRef !== MAP) r3BuildMap();
+  const now = performance.now();
+  R3.canvas.style.display = 'block';
+  if (R3.w !== VW || R3.h !== VH){ R3.w = VW; R3.h = VH; R3.rd.setSize(VW, VH, false); R3.cam3.aspect = VW / VH; R3.cam3.updateProjectionMatrix(); }
+  // Kamera folgt dem Spieler wie in 2D, schaut aber schräg von vorne auf die Arena
+  const tx = player.x - VW / 2, ty = player.y - VH / 2;
+  const wantX = WW + 80 < VW ? (WW - VW) / 2 : clamp(tx, -40, WW - VW + 40);
+  const wantY = WH + 80 < VH ? (WH - VH) / 2 : clamp(ty, -40, WH - VH + 40);
+  cam.x += (wantX - cam.x) * .18; cam.y += (wantY - cam.y) * .18;
+  const fx = cam.x + VW / 2 + rnd(-shakeAmt, shakeAmt), fz = cam.y + VH / 2 + rnd(-shakeAmt, shakeAmt);
+  // Abstand so, dass etwa so viel zu sehen ist wie in 2D; auf schmalen Handys etwas weiter weg
+  const D = Math.max(VH, VW * .62) * .5 / Math.tan(20 * Math.PI / 180) * (VW < 600 ? 1.25 : .95);
+  R3.cam3.position.set(fx, Math.cos(R3_PHI) * D, fz + Math.sin(R3_PHI) * D);
+  R3.cam3.lookAt(fx, 0, fz);
+  if (R3.waterMat){ R3.waterMat.opacity = .18 + Math.sin(now / 400) * .1; if (TH.lava) R3.waterMat.emissiveIntensity = .6 + Math.sin(now / 300) * .3; }
+
+  const list = ents.filter(e => !e.dead && visibleTo(e, player.team));
+  r3Ground(list);
+  // Helden
+  const seen = new Set();
+  for (const e of list){
+    if (e.isDummy) continue;
+    const s = r3Sprite(e); seen.add(e);
+    let alpha = e.stealth > 0 ? .3 : inBush(e) ? .6 : 1;
+    if (e.inv > 0 && Math.floor(now / 90) % 2) alpha *= .5;
+    const S = 2 * (e.r + 32), k = 160 / S, aimScr = Math.atan2(Math.sin(e.aim) * Math.cos(R3_PHI), Math.cos(e.aim));
+    s.p.setTransform(1, 0, 0, 1, 0, 0); s.p.clearRect(0, 0, 160, 160);
+    s.p.setTransform(k, 0, 0, k, 0, 0); drawHero(s.p, S / 2, S / 2, e.r, e.key, e.team, aimScr, 1, e.skin);
+    s.tex.needsUpdate = true;
+    s.sp.material.opacity = alpha; s.sp.visible = true;
+    s.sp.scale.set(S, S, 1);
+    s.sp.position.set(e.x, e.r + 8, e.y + 2);
+    if (e.slowT > 0 && Math.random() < .3) parts.push({ x: e.x + rnd(-e.r, e.r), y: e.y - e.r, vx: 0, vy: 40, t: 0, life: .6, color: '#e8fbff', size: 3 });
+  }
+  for (const [e, s] of R3.sprites){
+    if (seen.has(e)) continue;
+    if (ents.includes(e)) { s.sp.visible = false; continue; }
+    R3.scene.remove(s.sp); s.tex.dispose(); s.sp.material.dispose(); R3.sprites.delete(e);
+  }
+  // Schüsse und Bomben als Kugeln
+  let n = 0;
+  for (const b of bullets){
+    if (b.lob){
+      const pr = Math.min(1, b.trav / b.total), h = Math.sin(pr * Math.PI) * (b.total * .3 + 30), s = b.big ? 18 : 11;
+      const m = r3Ball(n++, Math.floor(now / 120) % 2 ? '#3a3030' : '#ff6b2b'); m.scale.setScalar(s); m.position.set(b.x, h + s, b.y);
+    } else {
+      const m = r3Ball(n++, b.color); m.scale.setScalar(b.r * 1.15); m.position.set(b.x, 26, b.y);
+    }
+  }
+  for (let i = n; i < R3.balls.length; i++) R3.balls[i].visible = false;
+  R3.rd.render(R3.scene, R3.cam3);
+
+  // 2D-Fläche obendrauf: durchsichtig, nur Figuren-Extras und Anzeigen
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+  if (mode === 'zone') r3At(ZONE.x, ZONE.y, 30, () => {
+    ctx.font = 'bold 34px system-ui,Segoe UI,Arial'; ctx.textAlign = 'center'; ctx.globalAlpha = .85; ctx.fillText('👑', ZONE.x, ZONE.y + 12); ctx.globalAlpha = 1;
+  });
+  for (const p of pupSpots){
+    if (!p.type) continue;
+    r3At(p.x, p.y, 20, () => {
+      const P = PUPS[p.type], bob = Math.sin(now / 250 + p.x) * 4, glow = .5 + Math.sin(now / 180) * .2;
+      ctx.globalAlpha = glow; ctx.fillStyle = P.color; ctx.beginPath(); ctx.arc(p.x, p.y - 8 + bob, 24, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1; ctx.fillStyle = '#1b1530'; ctx.beginPath(); ctx.arc(p.x, p.y - 8 + bob, 18, 0, Math.PI * 2); ctx.fill();
+      ctx.font = '22px system-ui,Segoe UI Emoji,Apple Color Emoji,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(P.icon, p.x, p.y - 7 + bob); ctx.textBaseline = 'alphabetic';
+    });
+  }
+  // Von hinten nach vorne, damit Nähere vorne liegen
+  const front = [...list].sort((a, b) => a.y - b.y);
+  for (const e of front){
+    if (e.isDummy) r3At(e.x, e.y, 0, () => drawDummy(e));
+    if (e.frozenT > 0) r3At(e.x, e.y, e.r + 8, () => {
+      const s = e.r + 10;
+      ctx.fillStyle = 'rgba(150,220,255,.5)'; ctx.strokeStyle = 'rgba(40,140,230,.95)'; ctx.lineWidth = 3;
+      rrect(ctx, e.x - s, e.y - s, s * 2, s * 2, 8); ctx.fill(); ctx.stroke();
+    });
+    if (e.shield > 0) r3At(e.x, e.y, e.r + 8, () => {
+      ctx.fillStyle = 'rgba(71,209,255,.15)'; ctx.strokeStyle = 'rgba(71,209,255,.75)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    });
+    if (e.flash > 0) r3At(e.x, e.y, e.r + 8, () => {
+      ctx.fillStyle = 'rgba(255,255,200,.8)'; ctx.beginPath(); ctx.arc(e.x + Math.cos(e.aim) * (e.r + 14), e.y + Math.sin(e.aim) * (e.r + 14) * Math.cos(R3_PHI), 9, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+  if (mode === 'flag') for (const team of ['blue', 'red']){
+    const F = FLAGS[team];
+    if (F.carrier){ const c = F.carrier; r3At(c.x, c.y, c.r * 1.6, () => drawFlag(c.x - c.r * .7, c.y - 4, team, .8)); continue; }
+    r3At(F.x, F.y, 0, () => {
+      drawFlag(F.x, F.y, team);
+      if (F.dropped){ ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(F.x + 8, F.y - 20, 30, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * F.dropT / FLAG_RETURN); ctx.stroke(); }
+    });
+  }
+  // Funken und Splitter
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  for (const p of parts){
+    const P = r3Proj(p.x, 18, p.y); if (P.behind) continue;
+    ctx.globalAlpha = 1 - p.t / p.life; ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(P.x, P.y, Math.max(.5, p.size * (1 - p.t / p.life * .5) * P.s), 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  for (const e of front) r3At(e.x, e.y, e.r * 2 + 18, () => drawBars(e));
+  for (const t of texts) r3At(t.x, t.y, 40, () => {
+    ctx.textAlign = 'center'; ctx.font = 'bold 20px system-ui,Segoe UI,Arial';
+    ctx.globalAlpha = 1 - t.t / .8; ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.7)';
+    ctx.strokeText(t.txt, t.x, t.y - t.t * 40); ctx.fillStyle = t.color; ctx.fillText(t.txt, t.x, t.y - t.t * 40);
+  });
+  ctx.globalAlpha = 1;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   if (isDecember()) drawSnow();
   drawHud();
 }
@@ -3040,7 +3383,7 @@ const $ = id => document.getElementById(id);
 function showSetValues(){
   $('setMusic').value = Math.round(settings.music * 100); $('setMusicVal').textContent = Math.round(settings.music * 100) + ' %';
   $('setSfx').value = Math.round(settings.sfx * 100); $('setSfxVal').textContent = Math.round(settings.sfx * 100) + ' %';
-  $('setShake').checked = settings.shake; $('setNums').checked = settings.dmgNums; $('setMini').checked = settings.minimap;
+  $('set3d').checked = settings.view3d; $('setShake').checked = settings.shake; $('setNums').checked = settings.dmgNums; $('setMini').checked = settings.minimap;
 }
 let setFrom = 'menu';   // wohin "Zurück" in den Einstellungen führt
 function openSettings(){
@@ -3052,6 +3395,7 @@ $('setMusic').oninput = () => { settings.music = $('setMusic').value / 100; save
 $('setSfx').oninput = () => { settings.sfx = $('setSfx').value / 100; saveSettings(); showSetValues(); };
 $('setSfx').onchange = () => { initAudio(); applySettings(); sfx('power'); };   // Probe-Ton
 $('setShake').onchange = () => { settings.shake = $('setShake').checked; saveSettings(); };
+$('set3d').onchange = () => { settings.view3d = $('set3d').checked; saveSettings(); };
 $('setNums').onchange = () => { settings.dmgNums = $('setNums').checked; saveSettings(); };
 $('setMini').onchange = () => { settings.minimap = $('setMini').checked; saveSettings(); };
 $('setClose').onclick = () => { $('settings').classList.add('hidden'); $(setFrom === 'pause' ? 'pause' : 'menu').classList.remove('hidden'); };
